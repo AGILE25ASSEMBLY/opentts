@@ -1,57 +1,51 @@
-# Base build image
-FROM debian:bullseye as build
-ARG TARGETARCH
-ARG TARGETVARIANT
+# Stage 1: Build environment
+FROM python:3.10-slim as build
 
-ENV LANG C.UTF-8
+# Avoid user interaction during install
 ENV DEBIAN_FRONTEND=noninteractive
-
-RUN echo "Dir::Cache var/cache/apt/${TARGETARCH}${TARGETVARIANT};" > /etc/apt/apt.conf.d/01cache
-
 RUN apt-get update && \
-    apt-get install --yes --no-install-recommends \
-    build-essential python3 python3-venv python3-dev wget curl
+    apt-get upgrade -y && \
+    apt-get install -y --no-install-recommends \
+    build-essential \
+    espeak-ng \
+    wget \
+    curl \
+    git && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
-WORKDIR /home/opentts/app
+# Set workdir
+WORKDIR /app
 
-# Setup virtual environment
-RUN python3 -m venv .venv && \
-    .venv/bin/pip install --upgrade pip setuptools wheel
+# Clone OpenTTS
+RUN git clone https://github.com/synesthesiam/opentts.git . && \
+    python -m venv venv && \
+    . venv/bin/activate && \
+    pip install --upgrade pip setuptools && \
+    pip install -r requirements.txt
 
-COPY requirements.txt .
+# Stage 2: Runtime environment
+FROM python:3.10-slim as runtime
 
-RUN .venv/bin/pip install -r requirements.txt
-
-# Optional: download nanoTTS (can be skipped)
-RUN mkdir -p /nanotts && \
-    wget -O - --no-check-certificate \
-        "https://github.com/synesthesiam/prebuilt-apps/releases/download/v1.0/nanotts-20200520_${TARGETARCH}${TARGETVARIANT}.tar.gz" | \
-        tar -C /nanotts -xzf -
-
-# -----------------------------------------------------------------------------
-
-FROM debian:bullseye as run
-ARG TARGETARCH
-ARG TARGETVARIANT
-
-ENV LANG C.UTF-8
 ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    espeak-ng && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
-RUN apt-get update && apt-get install --yes --no-install-recommends wget curl ffmpeg libsndfile1
+WORKDIR /app
 
-COPY --from=build /nanotts/ /usr/
+# Copy everything from the build stage
+COPY --from=build /app /app
+COPY --from=build /app/venv /app/venv
 
-# Add a non-root user
-RUN useradd -ms /bin/bash opentts
-
-# App code
-COPY --from=build /home/opentts/app/.venv /home/opentts/app/.venv
-COPY . /home/opentts/app/
-
-USER opentts
-WORKDIR /home/opentts/app
+# Use non-root user (optional but recommended)
+RUN adduser --disabled-password openttsuser
+USER openttsuser
 
 # Expose port
 EXPOSE 5500
 
-ENTRYPOINT [".venv/bin/python3", "app.py"]
+# Run server
+CMD ["venv/bin/python", "app.py"]
